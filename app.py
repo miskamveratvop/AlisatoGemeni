@@ -8,9 +8,9 @@ app = Flask(__name__)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Используем быструю модель Flash и задаем системное правило
+# Используем самую новую модель gemini-3.6-flash, как требует API Google
 model = genai.GenerativeModel(
-    'gemini-2.5-flash',
+    'gemini-3.6-flash',
     system_instruction="Ты голосовой помощник. Отвечай кратко, емко, без спецсимволов и маркдауна (без звездочек и решеток). Максимальная длина ответа — 1000 символов."
 )
 
@@ -37,18 +37,18 @@ def webhook():
             response = model.generate_content(user_text)
             text_to_say = response.text
         except Exception as e:
-            # ВЫВОДИТ ОШИБКУ В ЛОГИ RENDER (flush=True отправляет лог моментально)
+            # Выводим ошибку в консоль Render
             print(f"ОШИБКА GEMINI: {e}", flush=True)
             text_to_say = "Произошла ошибка связи с нейросетью."
 
-    # Алиса падает с ошибкой, если текст больше 1024 символов. Подстрахуемся:
+    # Алиса падает с ошибкой, если текст больше 1024 символов. Подстрахуемся.
     text_to_say = text_to_say[:1020]
 
     # Формируем JSON в том формате, который понимает Алиса
     return jsonify({
         "response": {
             "text": text_to_say,
-            "end_session": False # False означает, что диалог продолжается
+            "end_session": False
         },
         "version": "1.0"
     })
