@@ -1,56 +1,85 @@
 import os
-import json
 import requests
+import threading
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-# Используем URL для актуальной модели, рекомендованной в прошлой ошибке
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
+
+# Временная память сервера: запоминает ответы для каждого пользователя
+user_answers = {}
+
+def fetch_gemini_answer(user_id, text):
+    """Фоновая функция: запрашивает ответ у Gemini и сохраняет его в память"""
+    try:
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "systemInstruction": {"parts": [{"text": "Ты голосовой помощник. Отвечай кратко, емко, без спецсимволов и маркдауна. Максимальная длина ответа — 1000 символов."}]}
+        }
+        headers = {'Content-Type': 'application/json'}
+        
+        # Здесь мы можем дать нейросети целых 20 секунд на раздумья, Алису это уже не волнует
+        response = requests.post(GEMINI_URL, json=payload, headers=headers, timeout=20)
+        
+        if response.status_code == 200:
+            result = response.json()
+            answer = result['candidates'][0]['content']['parts'][0]['text']
+            user_answers[user_id] = answer[:1020].replace("*", "")
+        else:
+            user_answers[user_id] = f"Ошибка API Google: код {response.status_code}"
+            
+    except Exception as e:
+        user_answers[user_id] = "Произошла внутренняя ошибка при запросе к нейросети."
 
 @app.route('/', methods=['POST'])
 def webhook():
     data = request.json
     
+    # Защита от пустых пингов Яндекса
     if not data or 'request' not in data:
         return jsonify({"version": "1.0", "response": {"text": "ok", "end_session": False}})
 
     user_text = data['request'].get('original_utterance', '').strip()
+    user_text_lower = user_text.lower()
     is_new_session = data.get('session', {}).get('new', False)
     
+    # Получаем уникальный ID пользователя, чтобы не перепутать ответы, если навыком пользуются двое
+    user_id = data.get('session', {}).get('user_id', 'default_user')
+    
+    # 1. Запуск навыка
     if is_new_session and not user_text:
-        text_to_say = "Я на связи! Что спросим у нейросети?"
+        text_to_say = "Я на связи! Задайте вопрос, а потом скажите 'Переспрашиваю', чтобы узнать ответ."
+        
+    # 2. Проверка кодового слова (если пользователь хочет забрать ответ)
+    elif "переспрашив" in user_text_lower or "что там" in user_text_lower or "ответ" in user_text_lower:
+        status = user_answers.get(user_id)
+        
+        if status == "PROCESSING":
+            text_to_say = "Еще думаю. Дайте мне еще немного времени."
+        elif status:
+            text_to_say = status
+            # Удаляем ответ из памяти после того, как озвучили его
+            user_answers.pop(user_id, None)
+        else:
+            text_to_say = "Я пока ничего не искала. Задайте мне вопрос."
+            
+    # 3. Пустой запрос
     elif not user_text:
         text_to_say = "Повторите, пожалуйста."
+        
+    # 4. Пользователь задает новый вопрос
     else:
-        try:
-            # Формируем легкий прямой HTTP запрос к Google API
-            payload = {
-                "contents": [{"parts": [{"text": user_text}]}],
-                "systemInstruction": {"parts": [{"text": "Ты голосовой помощник. Отвечай кратко, емко, без спецсимволов и маркдауна. Максимальная длина ответа — 1000 символов."}]}
-            }
-            headers = {'Content-Type': 'application/json'}
-            
-            # Отправляем запрос с таймаутом в 2.5 секунды, чтобы успеть ответить Яндексу
-            response = requests.post(GEMINI_URL, json=payload, headers=headers, timeout=2.5)
-            
-            if response.status_code == 200:
-                result = response.json()
-                text_to_say = result['candidates'][0]['content']['parts'][0]['text']
-            else:
-                print(f"ОШИБКА API: {response.text}", flush=True)
-                text_to_say = f"Ошибка ответа нейросети: {response.status_code}"
-                
-        except requests.exceptions.Timeout:
-            print("ОШИБКА: Нейросеть не успела ответить вовремя", flush=True)
-            text_to_say = "Нейросеть долго думает. Попробуйте еще раз."
-        except Exception as e:
-            print(f"ОШИБКА: {e}", flush=True)
-            text_to_say = "Внутренняя ошибка сервера."
-
-    # Ограничение Яндекса
-    text_to_say = text_to_say[:1020].replace("*", "")
+        # Ставим статус "В процессе"
+        user_answers[user_id] = "PROCESSING"
+        
+        # Запускаем общение с Gemini в параллельном невидимом потоке
+        thread = threading.Thread(target=fetch_gemini_answer, args=(user_id, user_text))
+        thread.start()
+        
+        # Моментально отвечаем Алисе, укладываясь в 3 секунды
+        text_to_say = "Я подумаю, переспросите через пару минут."
 
     return jsonify({
         "response": {
