@@ -1,11 +1,13 @@
 import os
 import requests
 import threading
+import traceback
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Используем URL для актуальной модели
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}"
 
 # Временная память сервера: запоминает ответы для каждого пользователя
@@ -20,7 +22,7 @@ def fetch_gemini_answer(user_id, text):
         }
         headers = {'Content-Type': 'application/json'}
         
-        # Здесь мы можем дать нейросети целых 20 секунд на раздумья, Алису это уже не волнует
+        # Даем нейросети 20 секунд на раздумья
         response = requests.post(GEMINI_URL, json=payload, headers=headers, timeout=20)
         
         if response.status_code == 200:
@@ -28,16 +30,20 @@ def fetch_gemini_answer(user_id, text):
             answer = result['candidates'][0]['content']['parts'][0]['text']
             user_answers[user_id] = answer[:1020].replace("*", "")
         else:
+            # Принудительно выводим ответ с ошибкой от Google в консоль Render
+            print(f"ОШИБКА API (код {response.status_code}): {response.text}", flush=True)
             user_answers[user_id] = f"Ошибка API Google: код {response.status_code}"
             
     except Exception as e:
+        # Принудительно выводим поломку кода в консоль Render
+        print(f"!!! КРИТИЧЕСКАЯ ОШИБКА ФОНОВОГО ПОТОКА !!!\n{traceback.format_exc()}", flush=True)
         user_answers[user_id] = "Произошла внутренняя ошибка при запросе к нейросети."
 
 @app.route('/', methods=['POST'])
 def webhook():
     data = request.json
     
-    # Защита от пустых пингов Яндекса
+    # Защита от пустых пингов
     if not data or 'request' not in data:
         return jsonify({"version": "1.0", "response": {"text": "ok", "end_session": False}})
 
@@ -45,14 +51,14 @@ def webhook():
     user_text_lower = user_text.lower()
     is_new_session = data.get('session', {}).get('new', False)
     
-    # Получаем уникальный ID пользователя, чтобы не перепутать ответы, если навыком пользуются двое
+    # Получаем уникальный ID пользователя
     user_id = data.get('session', {}).get('user_id', 'default_user')
     
     # 1. Запуск навыка
     if is_new_session and not user_text:
         text_to_say = "Я на связи! Задайте вопрос, а потом скажите 'Переспрашиваю', чтобы узнать ответ."
         
-    # 2. Проверка кодового слова (если пользователь хочет забрать ответ)
+    # 2. Проверка кодового слова
     elif "переспрашив" in user_text_lower or "что там" in user_text_lower or "ответ" in user_text_lower:
         status = user_answers.get(user_id)
         
@@ -60,7 +66,7 @@ def webhook():
             text_to_say = "Еще думаю. Дайте мне еще немного времени."
         elif status:
             text_to_say = status
-            # Удаляем ответ из памяти после того, как озвучили его
+            # Удаляем ответ из памяти после озвучивания
             user_answers.pop(user_id, None)
         else:
             text_to_say = "Я пока ничего не искала. Задайте мне вопрос."
@@ -74,11 +80,11 @@ def webhook():
         # Ставим статус "В процессе"
         user_answers[user_id] = "PROCESSING"
         
-        # Запускаем общение с Gemini в параллельном невидимом потоке
+        # Запускаем общение с Gemini в параллельном потоке
         thread = threading.Thread(target=fetch_gemini_answer, args=(user_id, user_text))
         thread.start()
         
-        # Моментально отвечаем Алисе, укладываясь в 3 секунды
+        # Мгновенно отвечаем Алисе (укладываемся в 3 секунды)
         text_to_say = "Я подумаю, переспросите через пару минут."
 
     return jsonify({
