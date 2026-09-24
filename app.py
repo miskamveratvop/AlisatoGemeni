@@ -10,7 +10,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # Используем быструю модель Flash и задаем системное правило
 model = genai.GenerativeModel(
-    'gemini-1.5-pro',
+    'gemini-2.5-flash',
     system_instruction="Ты голосовой помощник. Отвечай кратко, емко, без спецсимволов и маркдауна (без звездочек и решеток). Максимальная длина ответа — 1000 символов."
 )
 
